@@ -518,7 +518,69 @@ async def face_from_video(file: UploadFile = File(...)):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
-@app.post("/analyze_video")
+@app.post("/face_mesh_video")
+async def face_mesh_from_video(file: UploadFile = File(...)):
+    """Analyze face mesh from video with iPhone rotation handling"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in [".mp4", ".mov", ".avi", ".m4v"]:
+        raise HTTPException(status_code=400, detail="Unsupported video format")
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            temp_path = tmp.name
+
+        rotation = get_video_rotation(temp_path)
+        
+        cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Failed to open video")
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        results = []
+        frame_number = 0
+        
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
+
+            frame = apply_rotation(frame, rotation)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_mesh_result = process_face_mesh(frame_rgb)
+            
+            if face_mesh_result:
+                results.append({
+                    "frame": frame_number,
+                    "timestamp": frame_number / fps if fps > 0 else 0,
+                    "face_mesh": face_mesh_result
+                })
+            
+            frame_number += 1
+
+        cap.release()
+        
+        return {
+            "frames_processed": frame_number,
+            "frames_with_face_mesh": len(results),
+            "video_info": {
+                "fps": fps,
+                "rotation_applied": rotation
+            },
+            "results": results
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 async def analyze_all_from_video(file: UploadFile = File(...)):
     """Analyze pose, hands, and faces from video with iPhone rotation handling"""
     if not file.filename:
@@ -566,6 +628,79 @@ async def analyze_all_from_video(file: UploadFile = File(...)):
                     "pose": pose_result,
                     "hands": hands_result,
                     "faces": face_result
+                })
+            
+            frame_number += 1
+
+        cap.release()
+        
+        return {
+            "frames_processed": frame_number,
+            "frames_with_detections": len(results),
+            "video_info": {
+                "fps": fps,
+                "rotation_applied": rotation
+            },
+            "results": results
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.post("/analyze_video")
+async def analyze_all_from_video(file: UploadFile = File(...)):
+    """Analyze pose, hands, faces, and face mesh from video with iPhone rotation handling"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in [".mp4", ".mov", ".avi", ".m4v"]:
+        raise HTTPException(status_code=400, detail="Unsupported video format")
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            temp_path = tmp.name
+
+        rotation = get_video_rotation(temp_path)
+        
+        cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Failed to open video")
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        results = []
+        frame_number = 0
+        
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
+
+            frame = apply_rotation(frame, rotation)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Process all detections
+            pose_result = process_pose(frame_rgb)
+            hands_result = process_hands(frame_rgb)
+            face_result = process_face_detection(frame_rgb)
+            face_mesh_result = process_face_mesh(frame_rgb)
+            
+            # Only include frames where at least one detection was found
+            if pose_result or hands_result or face_result or face_mesh_result:
+                results.append({
+                    "frame": frame_number,
+                    "timestamp": frame_number / fps if fps > 0 else 0,
+                    "pose": pose_result,
+                    "hands": hands_result,
+                    "faces": face_result,
+                    "face_mesh": face_mesh_result
                 })
             
             frame_number += 1
