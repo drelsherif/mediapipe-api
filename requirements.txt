@@ -3,3 +3,4 @@ uvicorn
 opencv-python
 mediapipe
 ffmpeg-python
+python-multipart
