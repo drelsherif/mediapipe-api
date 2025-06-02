@@ -727,3 +727,118 @@ async def analyze_all_from_video(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import shutil
+import os
+import time
+import uuid
+import json
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.post("/analyze/{test_type}")
+async def analyze_json(test_type: str, file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        json_data = json.loads(data)
+    except Exception as e:
+        return {"error": "Invalid JSON", "details": str(e)}
+
+    results = json_data.get("results", [])
+    summary = {"test": test_type, "frames": len(results)}
+
+    if test_type == "eye_movement":
+        left_x, right_x, left_y, right_y = [], [], [], []
+        for frame in results:
+            faces = frame.get("face_mesh", {}).get("faces", [])
+            if faces:
+                landmarks = faces[0].get("landmarks", [])
+                if len(landmarks) > 473:
+                    left_x.append(landmarks[468]["x"])
+                    right_x.append(landmarks[473]["x"])
+                    left_y.append(landmarks[468]["y"])
+                    right_y.append(landmarks[473]["y"])
+        summary["left_eye_x_range"] = max(left_x) - min(left_x) if left_x else 0
+        summary["right_eye_x_range"] = max(right_x) - min(right_x) if right_x else 0
+        summary["left_eye_y_range"] = max(left_y) - min(left_y) if left_y else 0
+        summary["right_eye_y_range"] = max(right_y) - min(right_y) if right_y else 0
+
+    elif test_type == "face_symmetry":
+        if results:
+            face = results[0].get("face_mesh", {}).get("faces", [])[0]
+            landmarks = face.get("landmarks", [])
+            if len(landmarks) > 362:
+                lx, ly = landmarks[33]["x"], landmarks[33]["y"]
+                rx, ry = landmarks[263]["x"], landmarks[263]["y"]
+                dx = abs(lx - rx)
+                dy = abs(ly - ry)
+                summary["eye_dx"] = dx
+                summary["eye_dy"] = dy
+
+    elif test_type == "smile_movement":
+        left_y, right_y = [], []
+        for frame in results:
+            face = frame.get("face_mesh", {}).get("faces", [])[0]
+            landmarks = face.get("landmarks", [])
+            if len(landmarks) > 291:
+                left_y.append(landmarks[61]["y"])
+                right_y.append(landmarks[291]["y"])
+        summary["left_smile_range"] = max(left_y) - min(left_y) if left_y else 0
+        summary["right_smile_range"] = max(right_y) - min(right_y) if right_y else 0
+
+    elif test_type == "finger_tapping":
+        y_values, timestamps = [], []
+        for frame in results:
+            hand = frame.get("hands", {}).get("hands", [])[0]
+            landmarks = hand.get("landmarks", [])
+            if len(landmarks) > 8:
+                y_values.append(landmarks[8]["y"])
+                timestamps.append(frame.get("timestamp", 0))
+        taps = 0
+        intervals = []
+        for i in range(1, len(y_values)-1):
+            if y_values[i] < y_values[i-1] and y_values[i] < y_values[i+1]:
+                taps += 1
+                intervals.append(timestamps[i] - timestamps[i-1])
+        summary["taps_detected"] = taps
+        summary["avg_interval"] = sum(intervals)/len(intervals) if intervals else 0
+
+    elif test_type == "gait":
+        y_hips = []
+        for frame in results:
+            pose = frame.get("pose", {}).get("landmarks", [])
+            if len(pose) > 24:
+                y_hips.append(pose[24]["y"])
+        summary["hip_range"] = max(y_hips) - min(y_hips) if y_hips else 0
+
+    elif test_type == "tremor":
+        x_vals = []
+        for frame in results:
+            hand = frame.get("hands", {}).get("hands", [])[0]
+            landmarks = hand.get("landmarks", [])
+            if len(landmarks) > 8:
+                x_vals.append(landmarks[8]["x"])
+        if x_vals:
+            mean = sum(x_vals) / len(x_vals)
+            var = sum((x - mean) ** 2 for x in x_vals) / len(x_vals)
+            summary["tremor_variance"] = var
+
+    elif test_type == "pose_balance":
+        sway = []
+        for frame in results:
+            pose = frame.get("pose", {}).get("landmarks", [])
+            if len(pose) > 0:
+                sway.append(pose[0]["x"])
+        summary["head_x_sway"] = max(sway) - min(sway) if sway else 0
+
+    return summary
